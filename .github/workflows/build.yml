@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Generate Source and Build Forge Mod
@@ -21,6 +25,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '8'
+
+      - name: Cache Gradle / ForgeGradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-forge-1.8.9-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: gradle-forge-1.8.9-
 
       - name: Download Forge 1.8.9 MDK
         shell: bash
@@ -377,18 +390,26 @@ jobs:
           echo "Generated source files:"
           find src/main -type f -print
 
-      - name: Configure archive name
+      - name: Configure build.gradle (Java 8 + archive name)
         shell: bash
         run: |
           set -euo pipefail
-          if grep -q 'archivesBaseName' build.gradle; then
-            sed -i 's/archivesBaseName = .*/archivesBaseName = "RainbowClient-1.8.9"/' build.gradle
-          fi
+          sed -i -E "s/archivesBaseName = .*/archivesBaseName = \"RainbowClient-1.8.9\"/" build.gradle
+          # Forge 1.8.9 MDK mặc định -source 1.6 -> không hỗ trợ try-with-resources
+          sed -i -E "s/(sourceCompatibility|targetCompatibility)( *= *)['\"]?1\.6['\"]?/\1\2'1.8'/g" build.gradle
+          cat >> build.gradle <<'GRADLE'
+
+          tasks.withType(JavaCompile) {
+              sourceCompatibility = '1.8'
+              targetCompatibility = '1.8'
+              options.encoding = 'UTF-8'
+          }
+          GRADLE
           chmod +x gradlew
 
       - name: Build mod
         shell: bash
-        run: ./gradlew --no-daemon clean build
+        run: ./gradlew build --no-daemon --console=plain --stacktrace
 
       - name: Verify JAR
         shell: bash
