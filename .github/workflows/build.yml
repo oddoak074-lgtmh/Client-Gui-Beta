@@ -59,7 +59,7 @@ jobs:
             {
               "modid": "rainbowclient",
               "name": "Rainbow Client",
-              "description": "Customizable Minecraft 1.8.9 client-side HUD and GUI.",
+              "description": "Lunar-style client mod: FPS, CPS, Keystrokes, Armor Status, Toggle Sprint, Zoom and a drag-and-drop HUD editor.",
               "version": "1.0.0",
               "mcversion": "1.8.9"
             }
@@ -68,20 +68,34 @@ jobs:
 
           cat > src/main/java/com/rainbow/client/Category.java <<'EOF'
           package com.rainbow.client;
-          public enum Category { HUD, RENDER, PLAYER, MOVEMENT, MISC }
+          public enum Category {
+              HUD("HUD"), MOVEMENT("Movement"), RENDER("Render");
+              public final String label;
+              Category(String label) { this.label = label; }
+          }
           EOF
 
-          cat > src/main/java/com/rainbow/client/Module.java <<'EOF'
+          cat > src/main/java/com/rainbow/client/Settings.java <<'EOF'
           package com.rainbow.client;
-          public class Module {
-              public final String name;
-              public final Category category;
-              public boolean enabled;
-              public int keyCode;
-              public Module(String name, Category category) {
-                  this.name = name; this.category = category;
+          public final class Settings {
+              public static boolean background = true;
+              private Settings() {}
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/Gfx.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.gui.Gui;
+          public final class Gfx {
+              private Gfx() {}
+              public static void rect(int x, int y, int w, int h, int color) { Gui.drawRect(x, y, x + w, y + h, color); }
+              public static void outline(int x, int y, int w, int h, int color) {
+                  rect(x, y, w, 1, color); rect(x, y + h - 1, w, 1, color);
+                  rect(x, y, 1, h, color); rect(x + w - 1, y, 1, h, color);
               }
-              public void toggle() { enabled = !enabled; }
+              public static boolean in(int mx, int my, int x, int y, int w, int h) {
+                  return mx >= x && mx < x + w && my >= y && my < y + h;
+              }
           }
           EOF
 
@@ -90,52 +104,242 @@ jobs:
           import java.awt.Color;
           public final class Rainbow {
               public static boolean enabled = true;
-              public static float speed = 0.18f;
-              public static float saturation = 0.85f;
-              public static float brightness = 1.0f;
+              public static float speed = 0.2f;
               private Rainbow() {}
               public static int color(float offset) {
                   if (!enabled) return 0xFF63AAFF;
-                  float hue = (float)((System.currentTimeMillis() * speed / 10000.0 + offset) % 1.0);
+                  float hue = (float)(((System.currentTimeMillis() / 1000.0) * speed + offset) % 1.0);
                   if (hue < 0) hue += 1.0f;
-                  return Color.HSBtoRGB(hue, saturation, brightness);
+                  return Color.HSBtoRGB(hue, 0.8f, 1.0f);
               }
           }
           EOF
 
-          cat > src/main/java/com/rainbow/client/Theme.java <<'EOF'
+          cat > src/main/java/com/rainbow/client/Cps.java <<'EOF'
           package com.rainbow.client;
-          public final class Theme {
-              public static int selected = 0;
-              private static final int[][] THEMES = {
-                  {0xFF17191F, 0xFF252833, 0xFF63AAFF},
-                  {0xFF101010, 0xFF242424, 0xFFB57AFF},
-                  {0xFF111A19, 0xFF23312D, 0xFF50E3B1}
-              };
-              private Theme() {}
-              public static int background() { return THEMES[selected][0]; }
-              public static int panel() { return THEMES[selected][1]; }
-              public static int accent() { return Rainbow.enabled ? Rainbow.color(0) : THEMES[selected][2]; }
-              public static void next() { selected = (selected + 1) % THEMES.length; }
-          }
-          EOF
-
-          cat > src/main/java/com/rainbow/client/Animation.java <<'EOF'
-          package com.rainbow.client;
-          public class Animation {
-              private float value;
-              private long last = System.currentTimeMillis();
-              public float animate(float target, float speed) {
+          import java.util.ArrayList;
+          import java.util.Iterator;
+          import java.util.List;
+          public final class Cps {
+              private static final List<Long> LEFT = new ArrayList<Long>();
+              private static final List<Long> RIGHT = new ArrayList<Long>();
+              private Cps() {}
+              public static void click(int button) {
                   long now = System.currentTimeMillis();
-                  float dt = Math.min(50, now - last);
-                  last = now;
-                  float factor = Math.min(1.0f, speed * dt / 16.0f);
-                  value += (target - value) * factor;
-                  return value;
+                  if (button == 0) LEFT.add(now); else if (button == 1) RIGHT.add(now);
               }
-              public float getValue() { return value; }
-              public void setValue(float value) {
-                  this.value = value; this.last = System.currentTimeMillis();
+              public static int left() { return count(LEFT); }
+              public static int right() { return count(RIGHT); }
+              private static int count(List<Long> list) {
+                  long now = System.currentTimeMillis();
+                  Iterator<Long> it = list.iterator();
+                  while (it.hasNext()) if (now - it.next() > 1000L) it.remove();
+                  return list.size();
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/Module.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.Minecraft;
+          public class Module {
+              public final String name;
+              public final Category category;
+              public boolean enabled;
+              public int x, y;
+              protected int w, h;
+              protected final Minecraft mc = Minecraft.getMinecraft();
+              public Module(String name, Category category, boolean enabled, int x, int y) {
+                  this.name = name; this.category = category; this.enabled = enabled; this.x = x; this.y = y;
+              }
+              public boolean isHud() { return false; }
+              public int getWidth() { return w; }
+              public int getHeight() { return h; }
+              public void render(boolean preview) {}
+              public void onTick() {}
+              public void toggle() { enabled = !enabled; }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/TextModule.java <<'EOF'
+          package com.rainbow.client;
+          public abstract class TextModule extends Module {
+              public TextModule(String name, int x, int y) {
+                  super(name, Category.HUD, true, x, y);
+                  this.h = 13;
+              }
+              protected abstract String text();
+              @Override public boolean isHud() { return true; }
+              @Override public void render(boolean preview) {
+                  String t = text();
+                  w = mc.fontRendererObj.getStringWidth(t) + 10;
+                  if (Settings.background) Gfx.rect(x, y, w, h, 0x90000000);
+                  Gfx.rect(x, y, 2, h, Rainbow.color(0));
+                  mc.fontRendererObj.drawStringWithShadow(t, x + 6, y + 3, 0xFFFFFFFF);
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/FpsModule.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.Minecraft;
+          public class FpsModule extends TextModule {
+              public FpsModule() { super("FPS", 6, 6); }
+              @Override protected String text() { return "FPS: " + Minecraft.getDebugFPS(); }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/CpsModule.java <<'EOF'
+          package com.rainbow.client;
+          public class CpsModule extends TextModule {
+              public CpsModule() { super("CPS", 6, 22); }
+              @Override protected String text() { return "CPS: " + Cps.left() + " | " + Cps.right(); }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/PingModule.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.network.NetworkPlayerInfo;
+          public class PingModule extends TextModule {
+              public PingModule() { super("Ping", 6, 38); }
+              @Override protected String text() {
+                  int ping = 0;
+                  if (mc.thePlayer != null && mc.getNetHandler() != null) {
+                      NetworkPlayerInfo info = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID());
+                      if (info != null) ping = info.getResponseTime();
+                  }
+                  return "Ping: " + ping + " ms";
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/CoordsModule.java <<'EOF'
+          package com.rainbow.client;
+          public class CoordsModule extends TextModule {
+              public CoordsModule() { super("Coordinates", 6, 54); }
+              @Override protected String text() {
+                  if (mc.thePlayer == null) return "XYZ: 0 0 0";
+                  return "XYZ: " + (int)Math.floor(mc.thePlayer.posX) + " "
+                      + (int)Math.floor(mc.thePlayer.posY) + " " + (int)Math.floor(mc.thePlayer.posZ);
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/ClockModule.java <<'EOF'
+          package com.rainbow.client;
+          import java.text.SimpleDateFormat;
+          import java.util.Date;
+          public class ClockModule extends TextModule {
+              private final SimpleDateFormat format = new SimpleDateFormat("HH:mm:ss");
+              public ClockModule() { super("Clock", 6, 70); }
+              @Override protected String text() { return format.format(new Date()); }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/KeystrokesModule.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.settings.GameSettings;
+          public class KeystrokesModule extends Module {
+              public KeystrokesModule() {
+                  super("Keystrokes", Category.HUD, true, 6, 90);
+                  this.w = 64; this.h = 78;
+              }
+              @Override public boolean isHud() { return true; }
+              @Override public void render(boolean preview) {
+                  GameSettings g = mc.gameSettings;
+                  key(22, 0, 20, 20, "W", !preview && g.keyBindForward.isKeyDown());
+                  key(0, 22, 20, 20, "A", !preview && g.keyBindLeft.isKeyDown());
+                  key(22, 22, 20, 20, "S", !preview && g.keyBindBack.isKeyDown());
+                  key(44, 22, 20, 20, "D", !preview && g.keyBindRight.isKeyDown());
+                  key(0, 44, 31, 20, "LMB", !preview && g.keyBindAttack.isKeyDown());
+                  key(33, 44, 31, 20, "RMB", !preview && g.keyBindUseItem.isKeyDown());
+                  key(0, 66, 64, 12, "SPACE", !preview && g.keyBindJump.isKeyDown());
+              }
+              private void key(int ox, int oy, int kw, int kh, String label, boolean down) {
+                  Gfx.rect(x + ox, y + oy, kw, kh, down ? 0xB0FFFFFF : 0x90000000);
+                  int tw = mc.fontRendererObj.getStringWidth(label);
+                  mc.fontRendererObj.drawString(label, x + ox + (kw - tw) / 2, y + oy + (kh - 8) / 2,
+                      down ? 0xFF000000 : 0xFFFFFFFF);
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/ArmorModule.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.renderer.GlStateManager;
+          import net.minecraft.client.renderer.RenderHelper;
+          import net.minecraft.item.ItemStack;
+          public class ArmorModule extends Module {
+              public ArmorModule() {
+                  super("Armor Status", Category.HUD, true, 6, 172);
+                  this.w = 50; this.h = 90;
+              }
+              @Override public boolean isHud() { return true; }
+              @Override public void render(boolean preview) {
+                  if (mc.thePlayer == null) return;
+                  for (int row = 0; row < 5; row++) {
+                      ItemStack stack = row < 4 ? mc.thePlayer.inventory.armorInventory[3 - row]
+                                                : mc.thePlayer.inventory.getCurrentItem();
+                      if (stack == null) continue;
+                      int yy = y + row * 18;
+                      GlStateManager.pushMatrix();
+                      RenderHelper.enableGUIStandardItemLighting();
+                      mc.getRenderItem().renderItemAndEffectIntoGUI(stack, x, yy);
+                      mc.getRenderItem().renderItemOverlayIntoGUI(mc.fontRendererObj, stack, x, yy, null);
+                      RenderHelper.disableStandardItemLighting();
+                      GlStateManager.popMatrix();
+                      if (stack.isItemStackDamageable()) {
+                          int left = stack.getMaxDamage() - stack.getItemDamage();
+                          mc.fontRendererObj.drawStringWithShadow(String.valueOf(left), x + 20, yy + 4, 0xFFFFFFFF);
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/SprintModule.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.settings.KeyBinding;
+          import org.lwjgl.input.Keyboard;
+          public class SprintModule extends Module {
+              private boolean held;
+              public SprintModule() { super("Toggle Sprint", Category.MOVEMENT, true, 0, 0); }
+              @Override public void onTick() {
+                  int code = mc.gameSettings.keyBindSprint.getKeyCode();
+                  boolean want = enabled && mc.thePlayer != null && mc.currentScreen == null
+                      && mc.gameSettings.keyBindForward.isKeyDown() && !mc.thePlayer.isSneaking();
+                  if (want) {
+                      KeyBinding.setKeyBindState(code, true);
+                      held = true;
+                  } else if (held) {
+                      KeyBinding.setKeyBindState(code, code > 0 && Keyboard.isKeyDown(code));
+                      held = false;
+                  }
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/rainbow/client/ZoomModule.java <<'EOF'
+          package com.rainbow.client;
+          import net.minecraft.client.settings.KeyBinding;
+          import org.lwjgl.input.Keyboard;
+          public class ZoomModule extends Module {
+              public static final KeyBinding KEY = new KeyBinding("Rainbow Client: Zoom", Keyboard.KEY_C, "Rainbow Client");
+              private boolean zooming;
+              private float savedFov;
+              public ZoomModule() { super("Zoom", Category.RENDER, true, 0, 0); }
+              @Override public void onTick() {
+                  boolean want = enabled && mc.thePlayer != null && mc.currentScreen == null && KEY.isKeyDown();
+                  if (want && !zooming) {
+                      savedFov = mc.gameSettings.fovSetting;
+                      mc.gameSettings.fovSetting = Math.max(10.0f, savedFov * 0.3f);
+                      mc.gameSettings.smoothCamera = true;
+                      zooming = true;
+                  } else if (!want && zooming) {
+                      mc.gameSettings.fovSetting = savedFov;
+                      mc.gameSettings.smoothCamera = false;
+                      zooming = false;
+                  }
               }
           }
           EOF
@@ -148,208 +352,210 @@ jobs:
           public final class Modules {
               private static final List<Module> LIST = new ArrayList<Module>();
               static {
-                  LIST.add(new Module("HUD", Category.HUD));
-                  LIST.add(new Module("FPS", Category.HUD));
-                  LIST.add(new Module("Coordinates", Category.HUD));
-                  LIST.add(new Module("Clock", Category.HUD));
-                  LIST.add(new Module("Array List", Category.HUD));
+                  LIST.add(new FpsModule());
+                  LIST.add(new CpsModule());
+                  LIST.add(new PingModule());
+                  LIST.add(new CoordsModule());
+                  LIST.add(new ClockModule());
+                  LIST.add(new KeystrokesModule());
+                  LIST.add(new ArmorModule());
+                  LIST.add(new SprintModule());
+                  LIST.add(new ZoomModule());
               }
               private Modules() {}
               public static List<Module> all() { return Collections.unmodifiableList(LIST); }
-              public static Module get(String name) {
-                  for (Module module : LIST)
-                      if (module.name.equalsIgnoreCase(name)) return module;
-                  return null;
-              }
           }
           EOF
 
           cat > src/main/java/com/rainbow/client/Config.java <<'EOF'
           package com.rainbow.client;
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
           import com.google.gson.JsonObject;
           import com.google.gson.JsonParser;
           import java.io.File;
           import java.io.FileReader;
           import java.io.FileWriter;
-          import java.io.IOException;
           import net.minecraft.client.Minecraft;
           public final class Config {
-              private static final File FILE = new File(Minecraft.getMinecraft().mcDataDir, "config/rainbowclient.json");
+              private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
               private Config() {}
+              private static File file() { return new File(Minecraft.getMinecraft().mcDataDir, "config/rainbowclient.json"); }
               public static void save() {
-                  File parent = FILE.getParentFile();
-                  if (!parent.exists() && !parent.mkdirs()) return;
-                  JsonObject root = new JsonObject();
-                  JsonObject modules = new JsonObject();
-                  for (Module module : Modules.all()) modules.addProperty(module.name, module.enabled);
-                  root.add("modules", modules);
-                  root.addProperty("rainbow", Rainbow.enabled);
-                  root.addProperty("speed", Rainbow.speed);
-                  root.addProperty("saturation", Rainbow.saturation);
-                  root.addProperty("brightness", Rainbow.brightness);
-                  root.addProperty("theme", Theme.selected);
-                  root.addProperty("hudX", HUD.x);
-                  root.addProperty("hudY", HUD.y);
-                  try (FileWriter writer = new FileWriter(FILE)) {
-                      writer.write(root.toString());
-                  } catch (IOException e) { e.printStackTrace(); }
+                  try {
+                      File f = file();
+                      File parent = f.getParentFile();
+                      if (!parent.exists() && !parent.mkdirs()) return;
+                      JsonObject root = new JsonObject();
+                      root.addProperty("rainbow", Rainbow.enabled);
+                      root.addProperty("speed", Rainbow.speed);
+                      root.addProperty("background", Settings.background);
+                      JsonObject mods = new JsonObject();
+                      for (Module m : Modules.all()) {
+                          JsonObject o = new JsonObject();
+                          o.addProperty("enabled", m.enabled);
+                          o.addProperty("x", m.x);
+                          o.addProperty("y", m.y);
+                          mods.add(m.name, o);
+                      }
+                      root.add("modules", mods);
+                      try (FileWriter writer = new FileWriter(f)) { GSON.toJson(root, writer); }
+                  } catch (Exception ignored) {}
               }
               public static void load() {
-                  if (!FILE.isFile()) return;
-                  try (FileReader reader = new FileReader(FILE)) {
-                      JsonObject root = new JsonParser().parse(reader).getAsJsonObject();
-                      if (root.has("modules")) {
-                          JsonObject modules = root.getAsJsonObject("modules");
-                          for (Module module : Modules.all())
-                              if (modules.has(module.name)) module.enabled = modules.get(module.name).getAsBoolean();
-                      }
+                  try {
+                      File f = file();
+                      if (!f.exists()) return;
+                      JsonObject root;
+                      try (FileReader reader = new FileReader(f)) { root = new JsonParser().parse(reader).getAsJsonObject(); }
                       if (root.has("rainbow")) Rainbow.enabled = root.get("rainbow").getAsBoolean();
                       if (root.has("speed")) Rainbow.speed = root.get("speed").getAsFloat();
-                      if (root.has("saturation")) Rainbow.saturation = root.get("saturation").getAsFloat();
-                      if (root.has("brightness")) Rainbow.brightness = root.get("brightness").getAsFloat();
-                      if (root.has("theme")) Theme.selected = Math.max(0, Math.min(2, root.get("theme").getAsInt()));
-                      if (root.has("hudX")) HUD.x = root.get("hudX").getAsInt();
-                      if (root.has("hudY")) HUD.y = root.get("hudY").getAsInt();
-                  } catch (Exception e) {
-                      System.err.println("[RainbowClient] Config load failed: " + e);
-                  }
-              }
-          }
-          EOF
-
-          cat > src/main/java/com/rainbow/client/HUD.java <<'EOF'
-          package com.rainbow.client;
-          import net.minecraft.client.Minecraft;
-          import net.minecraft.client.gui.Gui;
-          import net.minecraftforge.client.event.RenderGameOverlayEvent;
-          import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
-          public class HUD {
-              public static int x = 8, y = 8;
-              private final Minecraft mc = Minecraft.getMinecraft();
-              @SubscribeEvent
-              public void render(RenderGameOverlayEvent.Post event) {
-                  if (event.type != RenderGameOverlayEvent.ElementType.ALL) return;
-                  if (mc.thePlayer == null || mc.theWorld == null || mc.currentScreen != null) return;
-                  if (!active("HUD")) return;
-                  int line = 0;
-                  if (active("FPS")) text("FPS: " + Minecraft.getDebugFPS(), line++);
-                  if (active("Coordinates")) text(String.format("XYZ: %.1f / %.1f / %.1f",
-                      mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ), line++);
-                  if (active("Clock")) text(new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date()), line++);
-                  if (active("Array List")) {
-                      for (Module module : Modules.all())
-                          if (module.enabled && !module.name.equals("Array List")) text(module.name, line++);
-                  }
-              }
-              private boolean active(String name) {
-                  Module module = Modules.get(name);
-                  return module != null && module.enabled;
-              }
-              private void text(String value, int line) {
-                  int yy = y + line * 12, color = Rainbow.color(line * 0.07f);
-                  int width = mc.fontRendererObj.getStringWidth(value);
-                  Gui.drawRect(x - 3, yy - 2, x + width + 3, yy + 10, 0x990D0F14);
-                  Gui.drawRect(x - 3, yy - 2, x - 1, yy + 10, color);
-                  mc.fontRendererObj.drawStringWithShadow(value, x, yy, 0xFFFFFFFF);
+                      if (root.has("background")) Settings.background = root.get("background").getAsBoolean();
+                      if (!root.has("modules")) return;
+                      JsonObject mods = root.getAsJsonObject("modules");
+                      for (Module m : Modules.all()) {
+                          if (!mods.has(m.name)) continue;
+                          JsonObject o = mods.getAsJsonObject(m.name);
+                          if (o.has("enabled")) m.enabled = o.get("enabled").getAsBoolean();
+                          if (o.has("x")) m.x = o.get("x").getAsInt();
+                          if (o.has("y")) m.y = o.get("y").getAsInt();
+                      }
+                  } catch (Exception ignored) {}
               }
           }
           EOF
 
           cat > src/main/java/com/rainbow/client/HUDEditor.java <<'EOF'
           package com.rainbow.client;
+          import java.io.IOException;
           import net.minecraft.client.gui.GuiScreen;
           public class HUDEditor extends GuiScreen {
-              private boolean dragging;
+              private Module drag;
               private int dx, dy;
               @Override public void drawScreen(int mx, int my, float partialTicks) {
                   drawDefaultBackground();
-                  String sample = "Rainbow HUD | FPS: 144";
-                  int w = fontRendererObj.getStringWidth(sample);
-                  drawRect(HUD.x - 5, HUD.y - 4, HUD.x + w + 5, HUD.y + 14, Theme.panel());
-                  drawRect(HUD.x - 5, HUD.y - 4, HUD.x + w + 5, HUD.y - 2, Rainbow.color(0));
-                  fontRendererObj.drawStringWithShadow(sample, HUD.x, HUD.y, 0xFFFFFFFF);
-                  drawCenteredString(fontRendererObj, "HUD EDITOR - Drag preview | ESC to save", width / 2, height - 25, 0xFFFFFFFF);
-                  if (dragging) { HUD.x = mx - dx; HUD.y = my - dy; }
+                  for (Module m : Modules.all()) {
+                      if (!m.isHud() || !m.enabled) continue;
+                      if (m == drag) {
+                          m.x = mx - dx; m.y = my - dy;
+                          m.x = Math.max(0, Math.min(m.x, width - m.getWidth()));
+                          m.y = Math.max(0, Math.min(m.y, height - m.getHeight()));
+                      }
+                      m.render(true);
+                      Gfx.outline(m.x - 1, m.y - 1, m.getWidth() + 2, m.getHeight() + 2,
+                          m == drag ? 0xFFFFFFFF : Rainbow.color(0));
+                  }
+                  drawCenteredString(fontRendererObj, "HUD EDITOR - drag to move | ESC to save", width / 2, height - 20, 0xFFFFFFFF);
                   super.drawScreen(mx, my, partialTicks);
               }
-              @Override protected void mouseClicked(int mx, int my, int button) throws java.io.IOException {
-                  if (button == 0 && mx >= HUD.x - 5 && mx <= HUD.x + 200 && my >= HUD.y - 5 && my <= HUD.y + 20) {
-                      dragging = true; dx = mx - HUD.x; dy = my - HUD.y;
+              @Override protected void mouseClicked(int mx, int my, int button) throws IOException {
+                  if (button == 0) {
+                      for (int i = Modules.all().size() - 1; i >= 0; i--) {
+                          Module m = Modules.all().get(i);
+                          if (m.isHud() && m.enabled && Gfx.in(mx, my, m.x, m.y, m.getWidth(), m.getHeight())) {
+                              drag = m; dx = mx - m.x; dy = my - m.y;
+                              break;
+                          }
+                      }
                   }
                   super.mouseClicked(mx, my, button);
               }
               @Override protected void mouseReleased(int mx, int my, int state) {
-                  dragging = false; super.mouseReleased(mx, my, state);
+                  if (drag != null) { drag = null; Config.save(); }
+                  super.mouseReleased(mx, my, state);
               }
               @Override public void onGuiClosed() { Config.save(); }
               @Override public boolean doesGuiPauseGame() { return false; }
           }
           EOF
 
-          cat > src/main/java/com/rainbow/client/ClickGUI.java <<'EOF'
+          cat > src/main/java/com/rainbow/client/ModMenu.java <<'EOF'
           package com.rainbow.client;
+          import java.io.IOException;
+          import java.util.List;
           import net.minecraft.client.gui.GuiScreen;
           import org.lwjgl.input.Mouse;
-          public class ClickGUI extends GuiScreen {
-              private int x = 35, y = 35;
-              private final int w = 250, h = 310;
-              private boolean dragging;
-              private int dx, dy, scroll;
+          public class ModMenu extends GuiScreen {
+              private static final int PW = 320, ROW = 22, BW = 72;
+              private int px, py, ph, scroll;
+              private void calc() {
+                  ph = Math.min(height - 30, 270);
+                  px = (width - PW) / 2;
+                  py = (height - ph) / 2;
+              }
+              private int visible() { return Math.max(1, (ph - 66) / ROW); }
+              private void clamp() { scroll = Math.max(0, Math.min(scroll, Math.max(0, Modules.all().size() - visible()))); }
+              private int bx(int i) { return px + 10 + i * (BW + 4); }
               @Override public void drawScreen(int mx, int my, float partialTicks) {
+                  calc(); clamp();
                   drawDefaultBackground();
-                  drawRect(x, y, x + w, y + h, Theme.background());
-                  drawRect(x, y, x + w, y + 30, Theme.panel());
-                  for (int i = 0; i < w; i++)
-                      drawRect(x + i, y, x + i + 1, y + 2, Rainbow.color((float)i / w));
-                  fontRendererObj.drawStringWithShadow("RAINBOW CLIENT", x + 10, y + 10, 0xFFFFFFFF);
-                  fontRendererObj.drawString("Theme", x + 12, y + 40, 0xFFAAAAAA);
-                  fontRendererObj.drawString("Rainbow: " + (Rainbow.enabled ? "ON" : "OFF"), x + 12, y + 57, 0xFFFFFFFF);
-                  fontRendererObj.drawString("Speed: " + String.format("%.2f", Rainbow.speed), x + 12, y + 72, 0xFFFFFFFF);
-                  fontRendererObj.drawString("HUD Editor", x + 12, y + 87, 0xFFFFFFFF);
-                  int row = 0, top = y + 112;
-                  for (Module module : Modules.all()) {
-                      int yy = top + row * 24 - scroll;
-                      if (yy < y + 106 || yy > y + h - 25) { row++; continue; }
-                      drawRect(x + 8, yy, x + w - 8, yy + 20, module.enabled ? 0xFF303640 : 0xFF20232A);
-                      drawRect(x + 8, yy, x + 10, yy + 20, module.enabled ? Rainbow.color(row * 0.1f) : 0xFF444750);
-                      fontRendererObj.drawString(module.name, x + 16, yy + 6, 0xFFFFFFFF);
-                      String state = module.enabled ? "ON" : "OFF";
-                      fontRendererObj.drawString(state, x + w - 16 - fontRendererObj.getStringWidth(state), yy + 6,
-                          module.enabled ? Rainbow.color(0) : 0xFF888888);
-                      row++;
+                  Gfx.rect(px, py, PW, ph, 0xE0141720);
+                  for (int i = 0; i < PW; i++) Gfx.rect(px + i, py, 1, 2, Rainbow.color((float)i / PW));
+                  fontRendererObj.drawStringWithShadow("RAINBOW CLIENT", px + 10, py + 9, 0xFFFFFFFF);
+                  String[] labels = {
+                      "Edit HUD",
+                      "Rainbow: " + (Rainbow.enabled ? "ON" : "OFF"),
+                      "Speed: " + String.format("%.1f", Rainbow.speed),
+                      "BG: " + (Settings.background ? "ON" : "OFF")
+                  };
+                  for (int i = 0; i < 4; i++) {
+                      boolean hover = Gfx.in(mx, my, bx(i), py + 24, BW, 16);
+                      Gfx.rect(bx(i), py + 24, BW, 16, hover ? 0xFF303640 : 0xFF222630);
+                      drawCenteredString(fontRendererObj, labels[i], bx(i) + BW / 2, py + 28, 0xFFFFFFFF);
                   }
-                  if (dragging) { x = mx - dx; y = my - dy; }
+                  List<Module> list = Modules.all();
+                  int top = py + 48;
+                  for (int k = 0; k < visible(); k++) {
+                      int idx = scroll + k;
+                      if (idx >= list.size()) break;
+                      Module m = list.get(idx);
+                      int yy = top + k * ROW;
+                      boolean hover = Gfx.in(mx, my, px + 10, yy, PW - 20, ROW - 2);
+                      Gfx.rect(px + 10, yy, PW - 20, ROW - 2, hover ? 0xFF2A2F3A : 0xFF20232A);
+                      Gfx.rect(px + 10, yy, 2, ROW - 2, m.enabled ? Rainbow.color(k * 0.08f) : 0xFF444750);
+                      fontRendererObj.drawString(m.name, px + 18, yy + 7, 0xFFFFFFFF);
+                      fontRendererObj.drawString(m.category.label, px + 130, yy + 7, 0xFF888888);
+                      String s = m.enabled ? "ON" : "OFF";
+                      fontRendererObj.drawString(s, px + PW - 18 - fontRendererObj.getStringWidth(s), yy + 7,
+                          m.enabled ? Rainbow.color(0) : 0xFF888888);
+                  }
+                  drawCenteredString(fontRendererObj, "RSHIFT / ESC: close  |  scroll for more", width / 2, py + ph - 12, 0xFF777777);
                   super.drawScreen(mx, my, partialTicks);
               }
-              @Override protected void mouseClicked(int mx, int my, int button) throws java.io.IOException {
-                  if (button == 0 && mx >= x && mx <= x + w && my >= y && my <= y + 30) {
-                      dragging = true; dx = mx - x; dy = my - y; return;
-                  }
-                  if (button == 0 && mx >= x + 8 && mx <= x + w - 8) {
-                      if (my >= y + 36 && my < y + 53) { Theme.next(); Config.save(); return; }
-                      if (my >= y + 53 && my < y + 69) { Rainbow.enabled = !Rainbow.enabled; Config.save(); return; }
-                      if (my >= y + 69 && my < y + 85) {
-                          Rainbow.speed += 0.05f; if (Rainbow.speed > 1.0f) Rainbow.speed = 0.05f;
-                          Config.save(); return;
+              @Override protected void mouseClicked(int mx, int my, int button) throws IOException {
+                  calc();
+                  if (button == 0) {
+                      for (int i = 0; i < 4; i++) {
+                          if (Gfx.in(mx, my, bx(i), py + 24, BW, 16)) { action(i); return; }
                       }
-                      if (my >= y + 85 && my < y + 102) { mc.displayGuiScreen(new HUDEditor()); return; }
-                      int row = (my - (y + 112) + scroll) / 24;
-                      if (my >= y + 112 && row >= 0 && row < Modules.all().size()) {
-                          Modules.all().get(row).toggle(); Config.save();
+                      int top = py + 48;
+                      if (my >= top && mx >= px + 10 && mx < px + PW - 10) {
+                          int k = (my - top) / ROW;
+                          int idx = scroll + k;
+                          if (k < visible() && idx < Modules.all().size()) {
+                              Modules.all().get(idx).toggle();
+                              Config.save();
+                              return;
+                          }
                       }
                   }
                   super.mouseClicked(mx, my, button);
               }
-              @Override protected void mouseReleased(int mx, int my, int state) {
-                  dragging = false; super.mouseReleased(mx, my, state);
+              private void action(int i) {
+                  if (i == 0) { mc.displayGuiScreen(new HUDEditor()); return; }
+                  if (i == 1) Rainbow.enabled = !Rainbow.enabled;
+                  if (i == 2) { Rainbow.speed += 0.1f; if (Rainbow.speed > 1.01f) Rainbow.speed = 0.1f; }
+                  if (i == 3) Settings.background = !Settings.background;
+                  Config.save();
               }
-              @Override public void handleMouseInput() throws java.io.IOException {
+              @Override public void handleMouseInput() throws IOException {
                   super.handleMouseInput();
                   int wheel = Mouse.getEventDWheel();
-                  if (wheel != 0) {
-                      scroll -= wheel > 0 ? 24 : -24;
-                      scroll = Math.max(0, Math.min(scroll, Math.max(0, Modules.all().size() * 24 - 140)));
-                  }
+                  if (wheel != 0) { scroll += wheel > 0 ? -1 : 1; clamp(); }
+              }
+              @Override protected void keyTyped(char typedChar, int keyCode) throws IOException {
+                  if (keyCode == RainbowClient.menuKey.getKeyCode()) { mc.displayGuiScreen(null); return; }
+                  super.keyTyped(typedChar, keyCode);
               }
               @Override public void onGuiClosed() { Config.save(); }
               @Override public boolean doesGuiPauseGame() { return false; }
@@ -360,29 +566,46 @@ jobs:
           package com.rainbow.client;
           import net.minecraft.client.Minecraft;
           import net.minecraft.client.settings.KeyBinding;
+          import net.minecraftforge.client.event.MouseEvent;
+          import net.minecraftforge.client.event.RenderGameOverlayEvent;
           import net.minecraftforge.common.MinecraftForge;
           import net.minecraftforge.fml.client.registry.ClientRegistry;
           import net.minecraftforge.fml.common.Mod;
           import net.minecraftforge.fml.common.event.FMLInitializationEvent;
           import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
           import net.minecraftforge.fml.common.gameevent.InputEvent;
+          import net.minecraftforge.fml.common.gameevent.TickEvent;
           import org.lwjgl.input.Keyboard;
-          @Mod(modid = "rainbowclient", name = "Rainbow Client", version = "1.0.0", clientSideOnly = true)
+          @Mod(modid = "rainbowclient", name = "Rainbow Client", version = "1.0.0",
+               clientSideOnly = true, acceptedMinecraftVersions = "[1.8.9]")
           public class RainbowClient {
-              private KeyBinding guiKey, hudKey;
+              public static KeyBinding menuKey, editKey;
+              private final Minecraft mc = Minecraft.getMinecraft();
               @Mod.EventHandler public void init(FMLInitializationEvent event) {
-                  guiKey = new KeyBinding("Rainbow Client: ClickGUI", Keyboard.KEY_RSHIFT, "Rainbow Client");
-                  hudKey = new KeyBinding("Rainbow Client: HUD Editor", Keyboard.KEY_NONE, "Rainbow Client");
-                  ClientRegistry.registerKeyBinding(guiKey);
-                  ClientRegistry.registerKeyBinding(hudKey);
+                  menuKey = new KeyBinding("Rainbow Client: Mod Menu", Keyboard.KEY_RSHIFT, "Rainbow Client");
+                  editKey = new KeyBinding("Rainbow Client: HUD Editor", Keyboard.KEY_NONE, "Rainbow Client");
+                  ClientRegistry.registerKeyBinding(menuKey);
+                  ClientRegistry.registerKeyBinding(editKey);
+                  ClientRegistry.registerKeyBinding(ZoomModule.KEY);
                   MinecraftForge.EVENT_BUS.register(this);
-                  MinecraftForge.EVENT_BUS.register(new HUD());
                   Config.load();
               }
               @SubscribeEvent public void onKey(InputEvent.KeyInputEvent event) {
-                  Minecraft mc = Minecraft.getMinecraft();
-                  while (guiKey.isPressed()) if (mc.currentScreen == null) mc.displayGuiScreen(new ClickGUI());
-                  while (hudKey.isPressed()) if (mc.currentScreen == null) mc.displayGuiScreen(new HUDEditor());
+                  while (menuKey.isPressed()) if (mc.currentScreen == null) mc.displayGuiScreen(new ModMenu());
+                  while (editKey.isPressed()) if (mc.currentScreen == null) mc.displayGuiScreen(new HUDEditor());
+              }
+              @SubscribeEvent public void onTick(TickEvent.ClientTickEvent event) {
+                  if (event.phase != TickEvent.Phase.END) return;
+                  for (Module m : Modules.all()) m.onTick();
+              }
+              @SubscribeEvent public void onMouse(MouseEvent event) {
+                  if (event.buttonstate) Cps.click(event.button);
+              }
+              @SubscribeEvent public void onOverlay(RenderGameOverlayEvent.Post event) {
+                  if (event.type != RenderGameOverlayEvent.ElementType.TEXT) return;
+                  if (mc.gameSettings.showDebugInfo || mc.gameSettings.hideGUI) return;
+                  if (mc.currentScreen instanceof HUDEditor) return;
+                  for (Module m : Modules.all()) if (m.isHud() && m.enabled) m.render(false);
               }
           }
           EOF
